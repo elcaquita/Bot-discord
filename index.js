@@ -12,5 +12,5 @@ client.once('ready', () => {
   console.log(`¡Bot encendido como ${client.user.tag}!`);
 });
 
-// Pega tu token de Discord aquí directamente entre las comillas
-client.login("MTU0NTQzNzc2ODAwMjMxMDI2Ng.GzKHwB.gwUVgYvNhihZZZ7zkXZGdq_TKofcuJOUaBXylA");
+// Aquí dejamos la variable para que Railway lea el token de forma segura
+client.login(process.env.DISCORD_TOKEN);
