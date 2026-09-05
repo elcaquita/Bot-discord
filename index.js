@@ -11,6 +11,8 @@ const client = new Client({
 
 const antiRaidSettings = new Map();
 const spamTracker = new Map();
+const channelCreationTracker = new Map();
+const channelDeletionTracker = new Map();
 
 client.once('clientReady', async () => {
   console.log(`¡Bot encendido como ${client.user.tag}!`);
@@ -61,21 +63,21 @@ client.on('interactionCreate', async interaction => {
   const settings = antiRaidSettings.get(guild.id);
 
   if (commandName === 'antiraid') {
+    await interaction.deferReply({ ephemeral: true });
     const estado = interaction.options.getBoolean('estado');
     settings.enabled = estado;
 
-    await interaction.reply({
-      content: `🛡️ El sistema Anti-Raid ha sido **${estado ? 'ACTIVADO 🟢' : 'DESACTIVADO 🔴'}** para este servidor.`,
-      ephemeral: true
+    await interaction.editReply({
+      content: `🛡️ El sistema Anti-Raid ha sido **${estado ? 'ACTIVADO 🟢' : 'DESACTIVADO 🔴'}** para este servidor.`
     });
   }
 
   if (commandName === 'logsraid') {
+    await interaction.deferReply({ ephemeral: true });
     settings.logChannelId = channel.id;
 
-    await interaction.reply({
-      content: `📝 ¡Canal configurado con éxito! Ahora las alertas de seguridad y raids llegarán aquí: ${channel}`,
-      ephemeral: true
+    await interaction.editReply({
+      content: `📝 ¡Canal configurado con éxito! Ahora las alertas de seguridad y raids llegarán aquí: ${channel}`
     });
   }
 });
@@ -141,7 +143,7 @@ client.on('messageCreate', async message => {
       userData.count++;
       userData.lastMessageTimestamp = now;
 
-      if (userData.count >= 4) { // Umbral de mensajes rápidos para considerar spam
+      if (userData.count >= 4) {
         userData.count = 0;
         userData.warnings = (userData.warnings || 1) + 1;
         const currentWarning = userData.warnings > 3 ? 3 : userData.warnings;
@@ -161,13 +163,12 @@ client.on('messageCreate', async message => {
             `El usuario ${message.author} recibió advertencia ${currentWarning}/3 por spam en ${message.channel}.`
           );
         } else {
-          // Tercera advertencia: Aislamiento (Timeout) de 1 hora
           try {
             const member = await message.guild.members.fetch(userId);
             await member.timeout(60 * 60 * 1000, 'Spam masivo - Tercera advertencia');
             await message.channel.send(`⚠️ ${message.author} ha alcanzado 3/3 advertencias y ha sido aislado por 1 hora.`);
           } catch (err) {
-            console.log('No se pudo aplicar el timeout (falta permisos de moderación o rol superior)');
+            console.log('No se pudo aplicar el timeout');
           }
 
           await sendRaidLog(
@@ -176,7 +177,7 @@ client.on('messageCreate', async message => {
             `El usuario ${message.author} (${message.author.tag}) fue aislado (timeout) por 1 hora tras acumular 3 advertencias de spam.`
           );
           
-          userData.warnings = 0; // Reiniciar contador
+          userData.warnings = 0;
         }
       }
     } else {
@@ -186,8 +187,37 @@ client.on('messageCreate', async message => {
   }
 });
 
-const channelCreationTracker = new Map();
+// Detector de borrado masivo de canales
+client.on('channelDelete', async channel => {
+  if (!channel.guild) return;
 
+  const settings = antiRaidSettings.get(channel.guild.id);
+  if (!settings || !settings.enabled) return;
+
+  const guildId = channel.guild.id;
+  const now = Date.now();
+
+  if (!channelDeletionTracker.has(guildId)) {
+    channelDeletionTracker.set(guildId, { count: 1, timestamp: now });
+  } else {
+    const data = channelDeletionTracker.get(guildId);
+    if (now - data.timestamp < 10000) {
+      data.count++;
+      if (data.count >= 2) {
+        await sendRaidLog(
+          channel.guild,
+          '¡ALERTA CRÍTICA: Borrado Masivo de Canales!',
+          `Se detectó que están borrando múltiples canales en cuestión de segundos (${data.count} canales eliminados). ¡Posible Nuke/Raid en progreso!`
+        );
+      }
+    } else {
+      data.count = 1;
+      data.timestamp = now;
+    }
+  }
+});
+
+// Detector de creación masiva de canales y autodelete
 client.on('channelCreate', async channel => {
   if (!channel.guild) return;
 
@@ -203,11 +233,11 @@ client.on('channelCreate', async channel => {
     const data = channelCreationTracker.get(guildId);
     if (now - data.timestamp < 10000) {
       data.count++;
-      if (data.count >= 2) { // Si detecta creación masiva instantánea
+      if (data.count >= 2) {
         try {
           await channel.delete('Protección Anti-Raid: Creación masiva de canales bloqueada');
         } catch (e) {
-          console.log('No se pudo borrar el canal creado en raid (asegurate que el bot tenga permisos de Administrador)');
+          console.log('No se pudo borrar el canal creado en raid');
         }
 
         await sendRaidLog(
