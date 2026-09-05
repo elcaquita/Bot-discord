@@ -108,7 +108,6 @@ client.once('clientReady', async () => {
   try {
     const GUILD_ID = "1545825158009327710"; 
 
-    // Limpia los comandos globales anteriores para solucionar el problema de duplicados en Discord
     await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
 
     await rest.put(
@@ -169,7 +168,6 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (commandName === 'blacklist') {
-      // Respondemos de inmediato para evitar el error de "interacción desconocida"
       await interaction.deferReply({ ephemeral: true });
       
       const action = options.getString('accion');
@@ -180,9 +178,16 @@ client.on('interactionCreate', async interaction => {
         list.add(targetUser.id);
         try {
           const member = await guild.members.fetch(targetUser.id);
+          const rolesToRestore = member.roles.cache
+            .filter(role => role.id !== guild.id)
+            .map(role => role.id);
+          
+          await member.roles.remove(rolesToRestore, 'Añadido a Blacklist');
           await member.timeout(28 * 24 * 60 * 60 * 1000, 'Añadido a Blacklist');
-        } catch (e) {}
-        await interaction.editReply({ content: `⛔ El usuario ${targetUser.tag} fue agregado a la **Blacklist** y aislado.` });
+        } catch (e) {
+          console.error("Error al aplicar blacklist al miembro:", e);
+        }
+        await interaction.editReply({ content: `⛔ El usuario ${targetUser.tag} fue agregado a la **Blacklist**, se le quitaron los roles y se aisló.` });
       } else {
         list.delete(targetUser.id);
         await interaction.editReply({ content: `✅ El usuario ${targetUser.tag} fue removido de la **Blacklist**.` });
@@ -263,9 +268,14 @@ client.on('messageCreate', async message => {
 
   if (whiteList.has(guildId) && whiteList.get(guildId).has(userId)) return;
 
-  // Revisar BlackList
+  // Revisar BlackList (Borrar mensaje y aislar si habla)
   if (blackList.has(guildId) && blackList.get(guildId).has(userId)) {
-    try { await message.delete(); } catch (e) {}
+    try { 
+      await message.delete(); 
+      const member = await message.guild.members.fetch(userId);
+      const rolesToRestore = member.roles.cache.filter(r => r.id !== guildId).map(r => r.id);
+      if (rolesToRestore.length > 0) await member.roles.remove(rolesToRestore);
+    } catch (e) {}
     return;
   }
 
@@ -380,7 +390,7 @@ client.on('channelDelete', async channel => {
   }
 });
 
-// Detector de creación masiva de canales (Banea al creador y al bot si es un raid automatizado)
+// Detector de creación masiva de canales (Banea al creador y al bot de inmediato)
 client.on('channelCreate', async channel => {
   if (!channel.guild) return;
 
@@ -388,62 +398,64 @@ client.on('channelCreate', async channel => {
   const settings = antiRaidSettings.get(guild.id);
   if (!settings || !settings.enabled) return;
 
-  const guildId = guild.id;
-  const now = Date.now();
+  setTimeout(async () => {
+    try {
+      const fetchedLogs = await guild.fetchAuditLogs({
+        limit: 2,
+        type: AuditLogEvent.ChannelCreate,
+      });
+      const channelLog = fetchedLogs.entries.first();
 
-  try {
-    const fetchedLogs = await guild.fetchAuditLogs({
-      limit: 1,
-      type: AuditLogEvent.ChannelCreate,
-    });
-    const channelLog = fetchedLogs.entries.first();
+      if (channelLog) {
+        const { executor, target } = channelLog;
+        if (executor && executor.id !== client.user.id) {
+          if (whiteList.has(guild.id) && whiteList.get(guild.id).has(executor.id)) return;
 
-    if (channelLog) {
-      const { executor } = channelLog;
-      if (executor && executor.id !== client.user.id) {
-        if (whiteList.has(guildId) && whiteList.get(guildId).has(executor.id)) return;
+          const guildId = guild.id;
+          const now = Date.now();
 
-        if (!channelCreationTracker.has(guildId)) {
-          channelCreationTracker.set(guildId, { count: 1, timestamp: now, userId: executor.id });
-        } else {
-          const data = channelCreationTracker.get(guildId);
-          if (data.userId === executor.id && (now - data.timestamp < 10000)) {
-            data.count++;
-            if (data.count >= 3) {
-              try {
-                await channel.delete('Protección Anti-Raid: Creación masiva bloqueada');
-              } catch (e) {}
-
-              // Banes automáticos
-              try {
-                await guild.members.ban(executor.id, { reason: 'Raid: Creación masiva de canales' });
-              } catch (e) {}
-
-              if (executor.bot) {
-                try {
-                  const botAddLogs = await guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.BotAdd });
-                  const botAddLog = botAddLogs.entries.first();
-                  if (botAddLog && botAddLog.target.id === executor.id) {
-                    await guild.members.ban(botAddLog.executor.id, { reason: `Invitó al bot malicioso de raid: ${executor.tag}` });
-                  }
-                } catch (e) {}
-              }
-
-              await sendRaidLog(
-                guild,
-                '¡RAID DETECTADO Y BLOQUEADO!',
-                `El usuario/bot ${executor} (${executor.tag}) fue baneado automáticamente por crear canales masivamente.`
-              );
-            }
-          } else {
+          if (!channelCreationTracker.has(guildId)) {
             channelCreationTracker.set(guildId, { count: 1, timestamp: now, userId: executor.id });
+          } else {
+            const data = channelCreationTracker.get(guildId);
+            if (data.userId === executor.id && (now - data.timestamp < 15000)) {
+              data.count++;
+              if (data.count >= 2) { // Con 2 canales creados rápido salta el bloqueo
+                try {
+                  await channel.delete('Protección Anti-Raid: Creación masiva bloqueada');
+                } catch (e) {}
+
+                try {
+                  await guild.members.ban(executor.id, { reason: 'Raid: Creación masiva de canales' });
+                } catch (e) {}
+
+                if (executor.bot) {
+                  try {
+                    const botAddLogs = await guild.fetchAuditLogs({ limit: 5, type: AuditLogEvent.BotAdd });
+                    const botAddLog = botAddLogs.entries.find(entry => entry.target.id === executor.id);
+                    if (botAddLog && botAddLog.executor) {
+                      await guild.members.ban(botAddLog.executor.id, { reason: `Invitó al bot malicioso de raid: ${executor.tag}` });
+                    }
+                  } catch (e) {}
+                }
+
+                await sendRaidLog(
+                  guild,
+                  '¡RAID DETECTADO Y BLOQUEADO!',
+                  `El usuario/bot ${executor} (${executor.tag}) fue baneado automáticamente por crear canales masivamente.`
+                );
+                channelCreationTracker.delete(guildId);
+              }
+            } else {
+              channelCreationTracker.set(guildId, { count: 1, timestamp: now, userId: executor.id });
+            }
           }
         }
       }
+    } catch (e) {
+      console.log('Error en auditoría de creación de canales:', e);
     }
-  } catch (e) {
-    console.log('Error en auditoría de creación de canales:', e);
-  }
+  }, 1000);
 });
 
 // Detectar bots añadidos para banear al bot y a quien lo invitó
