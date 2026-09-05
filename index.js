@@ -15,7 +15,7 @@ const spamTracker = new Map();
 const channelCreationTracker = new Map();
 const channelDeletionTracker = new Map();
 
-// Listas de seguridad (Almacenadas en memoria para el servidor)
+// Listas de seguridad
 const whiteList = new Map(); // guildId -> Set(userId)
 const blackList = new Map(); // guildId -> Set(userId)
 const verifiedRoleConfig = new Map(); // guildId -> roleId
@@ -106,11 +106,22 @@ client.once('clientReady', async () => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   try {
-    await rest.put(
-      Routes.applicationCommands(client.user.id),
-      { body: commands },
-    );
-    console.log('¡Comandos de barra registrados con éxito!');
+    // CAMBIA "TU_ID_DE_SERVIDOR" por la ID real de tu servidor de Discord para que los comandos aparezcan al instante
+    const GUILD_ID = "TU_ID_DE_SERVIDOR"; 
+
+    if (GUILD_ID && GUILD_ID !== "TU_ID_DE_SERVIDOR") {
+      await rest.put(
+        Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+        { body: commands },
+      );
+      console.log('¡Comandos registrados en el servidor de forma instantánea!');
+    } else {
+      await rest.put(
+        Routes.applicationCommands(client.user.id),
+        { body: commands },
+      );
+      console.log('¡Comandos globales registrados (pueden tardar unos minutos)!');
+    }
   } catch (error) {
     console.error('Error al registrar comandos:', error);
   }
@@ -342,7 +353,7 @@ client.on('channelDelete', async channel => {
     const data = channelDeletionTracker.get(guildId);
     if (now - data.timestamp < 10000) {
       data.count++;
-      if (data.count >= 3) { // A partir de 3 borrados masivos salta alerta crítica
+      if (data.count >= 3) {
         await sendRaidLog(
           channel.guild,
           '¡ALERTA CRÍTICA: Borrado Masivo de Canales!',
@@ -356,7 +367,7 @@ client.on('channelDelete', async channel => {
   }
 });
 
-// Detector de creación masiva de canales (Umbral ajustado a 3 o más para no molestar tus creaciones manuales)
+// Detector de creación masiva de canales (Umbral de 3 para no interferir)
 client.on('channelCreate', async channel => {
   if (!channel.guild) return;
 
@@ -372,7 +383,7 @@ client.on('channelCreate', async channel => {
     const data = channelCreationTracker.get(guildId);
     if (now - data.timestamp < 10000) {
       data.count++;
-      if (data.count >= 3) { // Ahora requiere 3 canales rápidos para considerarlo raid y borrarlos
+      if (data.count >= 3) {
         try {
           await channel.delete('Protección Anti-Raid: Creación masiva bloqueada');
         } catch (e) {}
@@ -390,7 +401,7 @@ client.on('channelCreate', async channel => {
   }
 });
 
-// Detectar bots añadidos para banear al bot y a quien lo invitó usando los Audit Logs
+// Detectar bots añadidos para banear al bot y a quien lo invitó
 client.on('guildMemberAdd', async member => {
   if (!member.user.bot) return;
   const guild = member.guild;
@@ -408,12 +419,10 @@ client.on('guildMemberAdd', async member => {
     if (botAddLog) {
       const { executor, target } = botAddLog;
       if (target.id === member.id) {
-        // Banear al bot
         await guild.members.ban(member.id, { reason: 'Bot añadido durante un posible raid' });
         
-        // Banear al usuario que invitó al bot (si no está en whitelist)
         if (executor && !(whiteList.has(guild.id) && whiteList.get(guild.id).has(executor.id))) {
-          await guild.members.ban(executor.id, { reason: `Invirtió un bot malicioso/no autorizado: ${member.user.tag}` });
+          await guild.members.ban(executor.id, { reason: `Invitó un bot malicioso/no autorizado: ${member.user.tag}` });
           
           await sendRaidLog(
             guild,
