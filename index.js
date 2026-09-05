@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
 
 const client = new Client({
   intents: [
@@ -24,7 +24,7 @@ client.once('clientReady', async () => {
         {
           name: 'estado',
           description: 'Elige true para encender o false para apagar',
-          type: 5, // Tipo 5 corresponde a BOOLEAN en la API de Discord
+          type: 5,
           required: true
         }
       ]
@@ -39,7 +39,6 @@ client.once('clientReady', async () => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   try {
-    console.log('Registrando comandos de barra (/)...');
     await rest.put(
       Routes.applicationCommands(client.user.id),
       { body: commands },
@@ -81,7 +80,7 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-async function sendRaidLog(guild, title, description, color = 0xFF0000) {
+async function sendRaidLog(guild, title, description, color = 0xFF0000, fields = []) {
   const settings = antiRaidSettings.get(guild.id);
   if (!settings || !settings.enabled || !settings.logChannelId) return;
 
@@ -93,6 +92,10 @@ async function sendRaidLog(guild, title, description, color = 0xFF0000) {
     .setDescription(description)
     .setColor(color)
     .setTimestamp();
+
+  if (fields.length > 0) {
+    embed.addFields(fields);
+  }
 
   try {
     await logChannel.send({ embeds: [embed] });
@@ -113,11 +116,14 @@ client.on('messageCreate', async message => {
   const linkRegex = /(https?:\/\/|discord\.gg|discord\.com\/invite)/i;
   if (linkRegex.test(message.content)) {
     try {
+      const contenidoMensaje = message.content;
       await message.delete();
       await sendRaidLog(
         message.guild, 
-        'Enlace Bloqueado', 
-        `Se eliminó un mensaje con enlace sospechoso enviado por ${message.author} (${message.author.tag}) en ${message.channel}.\n\n**Contenido:** ${message.content}`
+        'Enlace Bloqueado / Eliminado', 
+        `Se eliminó un mensaje con enlace sospechoso enviado por ${message.author} (${message.author.tag}) en ${message.channel}.`,
+        0xFF0000,
+        [{ name: 'Contenido del mensaje:', value: contenidoMensaje || 'Sin texto' }]
       );
       return;
     } catch (e) {
@@ -126,7 +132,7 @@ client.on('messageCreate', async message => {
   }
 
   if (!spamTracker.has(userId)) {
-    spamTracker.set(userId, { count: 1, lastMessageTimestamp: now });
+    spamTracker.set(userId, { count: 1, lastMessageTimestamp: now, warnings: 1 });
   } else {
     const userData = spamTracker.get(userId);
     const timeDiff = now - userData.lastMessageTimestamp;
@@ -135,16 +141,42 @@ client.on('messageCreate', async message => {
       userData.count++;
       userData.lastMessageTimestamp = now;
 
-      if (userData.count >= 5) {
+      if (userData.count >= 4) { // Umbral de mensajes rápidos para considerar spam
+        userData.count = 0;
+        userData.warnings = (userData.warnings || 1) + 1;
+        const currentWarning = userData.warnings > 3 ? 3 : userData.warnings;
+
         try {
           await message.delete();
+        } catch (err) {}
+
+        if (currentWarning < 3) {
+          try {
+            await message.channel.send(`No spamees mas ${currentWarning}/3 a la tercera advertencia aislamiento de una hora, esta se te quitara en 10 minutos, ${message.author}`);
+          } catch (err) {}
+
           await sendRaidLog(
-            message.guild, 
-            'Spam Detectado', 
-            `El usuario ${message.author} (${message.author.tag}) fue detectado haciendo spam masivo en ${message.channel}.`
+            message.guild,
+            'Spam Detectado (Advertencia)',
+            `El usuario ${message.author} recibió advertencia ${currentWarning}/3 por spam en ${message.channel}.`
           );
-        } catch (e) {
-          console.log('Error manejando spam');
+        } else {
+          // Tercera advertencia: Aislamiento (Timeout) de 1 hora
+          try {
+            const member = await message.guild.members.fetch(userId);
+            await member.timeout(60 * 60 * 1000, 'Spam masivo - Tercera advertencia');
+            await message.channel.send(`⚠️ ${message.author} ha alcanzado 3/3 advertencias y ha sido aislado por 1 hora.`);
+          } catch (err) {
+            console.log('No se pudo aplicar el timeout (falta permisos de moderación o rol superior)');
+          }
+
+          await sendRaidLog(
+            message.guild,
+            'Usuario Aislado por Spam',
+            `El usuario ${message.author} (${message.author.tag}) fue aislado (timeout) por 1 hora tras acumular 3 advertencias de spam.`
+          );
+          
+          userData.warnings = 0; // Reiniciar contador
         }
       }
     } else {
@@ -171,11 +203,17 @@ client.on('channelCreate', async channel => {
     const data = channelCreationTracker.get(guildId);
     if (now - data.timestamp < 10000) {
       data.count++;
-      if (data.count >= 3) {
+      if (data.count >= 2) { // Si detecta creación masiva instantánea
+        try {
+          await channel.delete('Protección Anti-Raid: Creación masiva de canales bloqueada');
+        } catch (e) {
+          console.log('No se pudo borrar el canal creado en raid (asegurate que el bot tenga permisos de Administrador)');
+        }
+
         await sendRaidLog(
           channel.guild, 
-          '¡Posible Raid Masivo de Canales!', 
-          `Se han creado múltiples canales (${data.count}) en un periodo muy corto de tiempo. ¡Atención administradores!`
+          '¡Canal Eliminado por Raid Masivo!', 
+          `Se detectó un intento de raid creando canales masivamente. El canal "${channel.name}" ha sido eliminado automáticamente.`
         );
       }
     } else {
