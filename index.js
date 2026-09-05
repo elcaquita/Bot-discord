@@ -1,11 +1,12 @@
-const { Client, GatewayIntentBits, REST, Routes, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AuditLogEvent } = require('discord.js');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildModeration
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildMembers
   ]
 });
 
@@ -13,6 +14,11 @@ const antiRaidSettings = new Map();
 const spamTracker = new Map();
 const channelCreationTracker = new Map();
 const channelDeletionTracker = new Map();
+
+// Listas de seguridad (Almacenadas en memoria para el servidor)
+const whiteList = new Map(); // guildId -> Set(userId)
+const blackList = new Map(); // guildId -> Set(userId)
+const verifiedRoleConfig = new Map(); // guildId -> roleId
 
 client.once('clientReady', async () => {
   console.log(`¡Bot encendido como ${client.user.tag}!`);
@@ -35,6 +41,65 @@ client.once('clientReady', async () => {
       name: 'logsraid',
       description: 'Configura el canal actual para recibir los reportes y alertas de seguridad',
       default_member_permissions: String(PermissionFlagsBits.Administrator)
+    },
+    {
+      name: 'whitelist',
+      description: 'Agrega o quita a un usuario de la Whitelist',
+      default_member_permissions: String(PermissionFlagsBits.Administrator),
+      options: [
+        {
+          name: 'accion',
+          description: 'Añadir o remover',
+          type: 3,
+          required: true,
+          choices: [
+            { name: 'Añadir', value: 'add' },
+            { name: 'Remover', value: 'remove' }
+          ]
+        },
+        {
+          name: 'usuario',
+          description: 'Usuario objetivo',
+          type: 6,
+          required: true
+        }
+      ]
+    },
+    {
+      name: 'blacklist',
+      description: 'Mete a un usuario en la BlackList (bloqueo total)',
+      default_member_permissions: String(PermissionFlagsBits.Administrator),
+      options: [
+        {
+          name: 'accion',
+          description: 'Añadir o remover',
+          type: 3,
+          required: true,
+          choices: [
+            { name: 'Añadir', value: 'add' },
+            { name: 'Remover', value: 'remove' }
+          ]
+        },
+        {
+          name: 'usuario',
+          description: 'Usuario objetivo',
+          type: 6,
+          required: true
+        }
+      ]
+    },
+    {
+      name: 'verfiquechannel',
+      description: 'Crea el panel interactivo de verificación en el canal actual',
+      default_member_permissions: String(PermissionFlagsBits.Administrator),
+      options: [
+        {
+          name: 'rol',
+          description: 'Rol que se entregará al verificarse',
+          type: 8,
+          required: true
+        }
+      ]
     }
   ];
 
@@ -52,33 +117,109 @@ client.once('clientReady', async () => {
 });
 
 client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+  if (interaction.isChatInputCommand()) {
+    const { commandName, guild, channel, options } = interaction;
+    if (!guild) return;
 
-  const { commandName, guild, channel } = interaction;
-  if (!guild) return;
+    if (!antiRaidSettings.has(guild.id)) {
+      antiRaidSettings.set(guild.id, { enabled: false, logChannelId: null });
+    }
+    const settings = antiRaidSettings.get(guild.id);
 
-  if (!antiRaidSettings.has(guild.id)) {
-    antiRaidSettings.set(guild.id, { enabled: false, logChannelId: null });
-  }
-  const settings = antiRaidSettings.get(guild.id);
+    if (!whiteList.has(guild.id)) whiteList.set(guild.id, new Set());
+    if (!blackList.has(guild.id)) blackList.set(guild.id, new Set());
 
-  if (commandName === 'antiraid') {
-    await interaction.deferReply({ ephemeral: true });
-    const estado = interaction.options.getBoolean('estado');
-    settings.enabled = estado;
+    if (commandName === 'antiraid') {
+      await interaction.deferReply({ ephemeral: true });
+      const estado = options.getBoolean('estado');
+      settings.enabled = estado;
 
-    await interaction.editReply({
-      content: `🛡️ El sistema Anti-Raid ha sido **${estado ? 'ACTIVADO 🟢' : 'DESACTIVADO 🔴'}** para este servidor.`
-    });
-  }
+      await interaction.editReply({
+        content: `🛡️ El sistema Anti-Raid ha sido **${estado ? 'ACTIVADO 🟢' : 'DESACTIVADO 🔴'}** para este servidor.`
+      });
+    }
 
-  if (commandName === 'logsraid') {
-    await interaction.deferReply({ ephemeral: true });
-    settings.logChannelId = channel.id;
+    if (commandName === 'logsraid') {
+      await interaction.deferReply({ ephemeral: true });
+      settings.logChannelId = channel.id;
 
-    await interaction.editReply({
-      content: `📝 ¡Canal configurado con éxito! Ahora las alertas de seguridad y raids llegarán aquí: ${channel}`
-    });
+      await interaction.editReply({
+        content: `📝 ¡Canal configurado con éxito! Ahora las alertas de seguridad y raids llegarán aquí: ${channel}`
+      });
+    }
+
+    if (commandName === 'whitelist') {
+      await interaction.deferReply({ ephemeral: true });
+      const action = options.getString('accion');
+      const targetUser = options.getUser('usuario');
+      const list = whiteList.get(guild.id);
+
+      if (action === 'add') {
+        list.add(targetUser.id);
+        await interaction.editReply({ content: `✅ El usuario ${targetUser.tag} fue agregado a la **Whitelist**.` });
+      } else {
+        list.delete(targetUser.id);
+        await interaction.editReply({ content: `❌ El usuario ${targetUser.tag} fue removido de la **Whitelist**.` });
+      }
+    }
+
+    if (commandName === 'blacklist') {
+      await interaction.deferReply({ ephemeral: true });
+      const action = options.getString('accion');
+      const targetUser = options.getUser('usuario');
+      const list = blackList.get(guild.id);
+
+      if (action === 'add') {
+        list.add(targetUser.id);
+        try {
+          const member = await guild.members.fetch(targetUser.id);
+          await member.timeout(28 * 24 * 60 * 60 * 1000, 'Añadido a Blacklist');
+        } catch (e) {}
+        await interaction.editReply({ content: `⛔ El usuario ${targetUser.tag} fue agregado a la **Blacklist** y aislado.` });
+      } else {
+        list.delete(targetUser.id);
+        await interaction.editReply({ content: `✅ El usuario ${targetUser.tag} fue removido de la **Blacklist**.` });
+      }
+    }
+
+    if (commandName === 'verfiquechannel') {
+      await interaction.deferReply({ ephemeral: true });
+      const role = options.getRole('rol');
+      verifiedRoleConfig.set(guild.id, role.id);
+
+      const embed = new EmbedBuilder()
+        .setTitle('🔒 Verificación del Servidor')
+        .setDescription('Haz clic en el botón de abajo para verificar tu cuenta y desbloquear el acceso al servidor.')
+        .setColor(0x00FF00);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('verify_button')
+          .setLabel('Verificarse')
+          .setStyle(ButtonStyle.Success)
+          .setEmoji('✅')
+      );
+
+      await channel.send({ embeds: [embed], components: [row] });
+      await interaction.editReply({ content: `✅ ¡Panel de verificación creado con éxito en este canal con el rol ${role.name}!` });
+    }
+  } 
+  else if (interaction.isButton()) {
+    if (interaction.customId === 'verify_button') {
+      const guild = interaction.guild;
+      const roleId = verifiedRoleConfig.get(guild.id);
+      if (!roleId) {
+        return interaction.reply({ content: '❌ Este servidor no tiene configurado un rol de verificación aún.', ephemeral: true });
+      }
+
+      try {
+        const role = guild.roles.cache.get(roleId);
+        await interaction.member.roles.add(role);
+        await interaction.reply({ content: '🎉 ¡Te has verificado correctamente!', ephemeral: true });
+      } catch (e) {
+        await interaction.reply({ content: '❌ Ocurrió un error al asignarte el rol. Contacta a un administrador.', ephemeral: true });
+      }
+    }
   }
 });
 
@@ -106,16 +247,27 @@ async function sendRaidLog(guild, title, description, color = 0xFF0000, fields =
   }
 }
 
+// Filtro BlackList / Spam / Links
 client.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
 
-  const settings = antiRaidSettings.get(message.guild.id);
+  const guildId = message.guild.id;
+  const userId = message.author.id;
+
+  if (whiteList.has(guildId) && whiteList.get(guildId).has(userId)) return;
+
+  // Revisar BlackList
+  if (blackList.has(guildId) && blackList.get(guildId).has(userId)) {
+    try { await message.delete(); } catch (e) {}
+    return;
+  }
+
+  const settings = antiRaidSettings.get(guildId);
   if (!settings || !settings.enabled) return;
 
-  const userId = message.author.id;
   const now = Date.now();
-
   const linkRegex = /(https?:\/\/|discord\.gg|discord\.com\/invite)/i;
+
   if (linkRegex.test(message.content)) {
     try {
       const contenidoMensaje = message.content;
@@ -128,9 +280,7 @@ client.on('messageCreate', async message => {
         [{ name: 'Contenido del mensaje:', value: contenidoMensaje || 'Sin texto' }]
       );
       return;
-    } catch (e) {
-      console.log('No se pudo borrar el mensaje con link');
-    }
+    } catch (e) {}
   }
 
   if (!spamTracker.has(userId)) {
@@ -148,35 +298,24 @@ client.on('messageCreate', async message => {
         userData.warnings = (userData.warnings || 1) + 1;
         const currentWarning = userData.warnings > 3 ? 3 : userData.warnings;
 
-        try {
-          await message.delete();
-        } catch (err) {}
+        try { await message.delete(); } catch (err) {}
 
         if (currentWarning < 3) {
           try {
             await message.channel.send(`No spamees mas ${currentWarning}/3 a la tercera advertencia aislamiento de una hora, esta se te quitara en 10 minutos, ${message.author}`);
           } catch (err) {}
-
-          await sendRaidLog(
-            message.guild,
-            'Spam Detectado (Advertencia)',
-            `El usuario ${message.author} recibió advertencia ${currentWarning}/3 por spam en ${message.channel}.`
-          );
         } else {
           try {
             const member = await message.guild.members.fetch(userId);
             await member.timeout(60 * 60 * 1000, 'Spam masivo - Tercera advertencia');
             await message.channel.send(`⚠️ ${message.author} ha alcanzado 3/3 advertencias y ha sido aislado por 1 hora.`);
-          } catch (err) {
-            console.log('No se pudo aplicar el timeout');
-          }
+          } catch (err) {}
 
           await sendRaidLog(
             message.guild,
             'Usuario Aislado por Spam',
-            `El usuario ${message.author} (${message.author.tag}) fue aislado (timeout) por 1 hora tras acumular 3 advertencias de spam.`
+            `El usuario ${message.author} (${message.author.tag}) fue aislado por 1 hora tras acumular 3 advertencias de spam.`
           );
-          
           userData.warnings = 0;
         }
       }
@@ -203,11 +342,11 @@ client.on('channelDelete', async channel => {
     const data = channelDeletionTracker.get(guildId);
     if (now - data.timestamp < 10000) {
       data.count++;
-      if (data.count >= 2) {
+      if (data.count >= 3) { // A partir de 3 borrados masivos salta alerta crítica
         await sendRaidLog(
           channel.guild,
           '¡ALERTA CRÍTICA: Borrado Masivo de Canales!',
-          `Se detectó que están borrando múltiples canales en cuestión de segundos (${data.count} canales eliminados). ¡Posible Nuke/Raid en progreso!`
+          `Se detectó la eliminación masiva de canales en segundos (${data.count} canales borrados). ¡Posible Nuke/Raid detectado!`
         );
       }
     } else {
@@ -217,7 +356,7 @@ client.on('channelDelete', async channel => {
   }
 });
 
-// Detector de creación masiva de canales y autodelete
+// Detector de creación masiva de canales (Umbral ajustado a 3 o más para no molestar tus creaciones manuales)
 client.on('channelCreate', async channel => {
   if (!channel.guild) return;
 
@@ -233,12 +372,10 @@ client.on('channelCreate', async channel => {
     const data = channelCreationTracker.get(guildId);
     if (now - data.timestamp < 10000) {
       data.count++;
-      if (data.count >= 2) {
+      if (data.count >= 3) { // Ahora requiere 3 canales rápidos para considerarlo raid y borrarlos
         try {
-          await channel.delete('Protección Anti-Raid: Creación masiva de canales bloqueada');
-        } catch (e) {
-          console.log('No se pudo borrar el canal creado en raid');
-        }
+          await channel.delete('Protección Anti-Raid: Creación masiva bloqueada');
+        } catch (e) {}
 
         await sendRaidLog(
           channel.guild, 
@@ -250,6 +387,45 @@ client.on('channelCreate', async channel => {
       data.count = 1;
       data.timestamp = now;
     }
+  }
+});
+
+// Detectar bots añadidos para banear al bot y a quien lo invitó usando los Audit Logs
+client.on('guildMemberAdd', async member => {
+  if (!member.user.bot) return;
+  const guild = member.guild;
+
+  const settings = antiRaidSettings.get(guild.id);
+  if (!settings || !settings.enabled) return;
+
+  try {
+    const fetchedLogs = await guild.fetchAuditLogs({
+      limit: 1,
+      type: AuditLogEvent.BotAdd,
+    });
+    const botAddLog = fetchedLogs.entries.first();
+
+    if (botAddLog) {
+      const { executor, target } = botAddLog;
+      if (target.id === member.id) {
+        // Banear al bot
+        await guild.members.ban(member.id, { reason: 'Bot añadido durante un posible raid' });
+        
+        // Banear al usuario que invitó al bot (si no está en whitelist)
+        if (executor && !(whiteList.has(guild.id) && whiteList.get(guild.id).has(executor.id))) {
+          await guild.members.ban(executor.id, { reason: `Invirtió un bot malicioso/no autorizado: ${member.user.tag}` });
+          
+          await sendRaidLog(
+            guild,
+            'Bot y Responsable Baneados',
+            `El bot ${member} fue detectado y baneado junto con el usuario que lo invitó: ${executor} (${executor.tag}).`,
+            0xFF0000
+          );
+        }
+      }
+    }
+  } catch (e) {
+    console.log('No se pudo verificar el audit log para el bot añadido:', e);
   }
 });
 
