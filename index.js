@@ -106,8 +106,7 @@ client.once('clientReady', async () => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   try {
-    // CAMBIA "TU_ID_DE_SERVIDOR" por la ID real de tu servidor de Discord para que los comandos aparezcan al instante
-    const GUILD_ID = "TU_ID_DE_SERVIDOR"; 
+    const GUILD_ID = "1545825158009327710"; 
 
     if (GUILD_ID && GUILD_ID !== "TU_ID_DE_SERVIDOR") {
       await rest.put(
@@ -367,7 +366,7 @@ client.on('channelDelete', async channel => {
   }
 });
 
-// Detector de creación masiva de canales (Umbral de 3 para no interferir)
+// Detector de creación masiva de canales
 client.on('channelCreate', async channel => {
   if (!channel.guild) return;
 
