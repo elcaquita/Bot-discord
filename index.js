@@ -15,23 +15,27 @@ const spamTracker = new Map();
 client.once('clientReady', async () => {
   console.log(`¡Bot encendido como ${client.user.tag}!`);
 
-  const antiRaidCmd = new SlashCommandBuilder()
-    .setName('antiraid')
-    .setDescription('Activa o desactiva el sistema de protección contra raids y spam')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+  const commands = [
+    {
+      name: 'antiraid',
+      description: 'Activa o desactiva el sistema de protección contra raids y spam',
+      default_member_permissions: String(PermissionFlagsBits.Administrator),
+      options: [
+        {
+          name: 'estado',
+          description: 'Elige true para encender o false para apagar',
+          type: 5, // Tipo 5 corresponde a BOOLEAN en la API de Discord
+          required: true
+        }
+      ]
+    },
+    {
+      name: 'logsraid',
+      description: 'Configura el canal actual para recibir los reportes y alertas de seguridad',
+      default_member_permissions: String(PermissionFlagsBits.Administrator)
+    }
+  ];
 
-  antiRaidCmd.addBooleanOption(opt => 
-    opt.setName('estado')
-       .setDescription('Elige true para encender o false para apagar')
-       .setRequired(true)
-  );
-
-  const logsRaidCmd = new SlashCommandBuilder()
-    .setName('logsraid')
-    .setDescription('Configura el canal actual para recibir los reportes y alertas de seguridad')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
-
-  const commands = [antiRaidCmd.toJSON(), logsRaidCmd.toJSON()];
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   try {
@@ -106,7 +110,7 @@ client.on('messageCreate', async message => {
   const userId = message.author.id;
   const now = Date.now();
 
-  const linkRegex = /(https?:\/\/|discord\.gg\/|discord\.com\/invite\/)/i;
+  const linkRegex = /(https?:\/\/|discord\.gg|discord\.com\/invite)/i;
   if (linkRegex.test(message.content)) {
     try {
       await message.delete();
