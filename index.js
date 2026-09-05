@@ -108,19 +108,15 @@ client.once('clientReady', async () => {
   try {
     const GUILD_ID = "1545825158009327710"; 
 
-    if (GUILD_ID && GUILD_ID !== "TU_ID_DE_SERVIDOR") {
-      await rest.put(
-        Routes.applicationGuildCommands(client.user.id, GUILD_ID),
-        { body: commands },
-      );
-      console.log('¡Comandos registrados en el servidor de forma instantánea!');
-    } else {
-      await rest.put(
-        Routes.applicationCommands(client.user.id),
-        { body: commands },
-      );
-      console.log('¡Comandos globales registrados (pueden tardar unos minutos)!');
-    }
+    // Limpia los comandos globales anteriores para evitar duplicados en Discord
+    await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
+
+    // Registra los comandos limpios en tu servidor de forma instantánea
+    await rest.put(
+      Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+      { body: commands },
+    );
+    console.log('¡Comandos sincronizados y sin duplicados!');
   } catch (error) {
     console.error('Error al registrar comandos:', error);
   }
@@ -317,14 +313,38 @@ client.on('messageCreate', async message => {
         } else {
           try {
             const member = await message.guild.members.fetch(userId);
-            await member.timeout(60 * 60 * 1000, 'Spam masivo - Tercera advertencia');
-            await message.channel.send(`⚠️ ${message.author} ha alcanzado 3/3 advertencias y ha sido aislado por 1 hora.`);
-          } catch (err) {}
+            
+            // Guarda los roles actuales (excluyendo el rol @everyone)
+            const rolesToRestore = member.roles.cache
+              .filter(role => role.id !== message.guild.id)
+              .map(role => role.id);
+
+            // Quita los roles y aplica timeout de 10 minutos
+            await member.roles.remove(rolesToRestore, 'Spam masivo - Quita de roles temporal');
+            await member.timeout(10 * 60 * 1000, 'Spam masivo - Aislamiento de 10 minutos');
+            
+            await message.channel.send(`⚠️ Aislamiento de 10 minutos dado, ${message.author}`);
+
+            // Programa la devolución de los roles después de 10 minutos exactos
+            setTimeout(async () => {
+              try {
+                const fetchedMember = await message.guild.members.fetch(userId);
+                if (fetchedMember) {
+                  await fetchedMember.roles.add(rolesToRestore, 'Devolución de roles tras finalizar aislamiento');
+                }
+              } catch (err) {
+                console.log('No se pudieron devolver los roles al usuario:', err);
+              }
+            }, 10 * 60 * 1000);
+
+          } catch (err) {
+            console.error(err);
+          }
 
           await sendRaidLog(
             message.guild,
             'Usuario Aislado por Spam',
-            `El usuario ${message.author} (${message.author.tag}) fue aislado por 1 hora tras acumular 3 advertencias de spam.`
+            `El usuario ${message.author} (${message.author.tag}) fue aislado por 10 minutos y se le retiraron los roles temporalmente.`
           );
           userData.warnings = 0;
         }
