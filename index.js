@@ -108,15 +108,14 @@ client.once('clientReady', async () => {
   try {
     const GUILD_ID = "1545825158009327710"; 
 
-    // Limpia los comandos globales anteriores para evitar duplicados en Discord
+    // Limpia los comandos globales anteriores para solucionar el problema de duplicados en Discord
     await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
 
-    // Registra los comandos limpios en tu servidor de forma instantánea
     await rest.put(
       Routes.applicationGuildCommands(client.user.id, GUILD_ID),
       { body: commands },
     );
-    console.log('¡Comandos sincronizados y sin duplicados!');
+    console.log('¡Comandos sincronizados correctamente!');
   } catch (error) {
     console.error('Error al registrar comandos:', error);
   }
@@ -170,7 +169,9 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (commandName === 'blacklist') {
+      // Respondemos de inmediato para evitar el error de "interacción desconocida"
       await interaction.deferReply({ ephemeral: true });
+      
       const action = options.getString('accion');
       const targetUser = options.getUser('usuario');
       const list = blackList.get(guild.id);
@@ -314,32 +315,25 @@ client.on('messageCreate', async message => {
           try {
             const member = await message.guild.members.fetch(userId);
             
-            // Guarda los roles actuales (excluyendo el rol @everyone)
             const rolesToRestore = member.roles.cache
               .filter(role => role.id !== message.guild.id)
               .map(role => role.id);
 
-            // Quita los roles y aplica timeout de 10 minutos
             await member.roles.remove(rolesToRestore, 'Spam masivo - Quita de roles temporal');
             await member.timeout(10 * 60 * 1000, 'Spam masivo - Aislamiento de 10 minutos');
             
             await message.channel.send(`⚠️ Aislamiento de 10 minutos dado, ${message.author}`);
 
-            // Programa la devolución de los roles después de 10 minutos exactos
             setTimeout(async () => {
               try {
                 const fetchedMember = await message.guild.members.fetch(userId);
                 if (fetchedMember) {
                   await fetchedMember.roles.add(rolesToRestore, 'Devolución de roles tras finalizar aislamiento');
                 }
-              } catch (err) {
-                console.log('No se pudieron devolver los roles al usuario:', err);
-              }
+              } catch (err) {}
             }, 10 * 60 * 1000);
 
-          } catch (err) {
-            console.error(err);
-          }
+          } catch (err) {}
 
           await sendRaidLog(
             message.guild,
@@ -386,37 +380,69 @@ client.on('channelDelete', async channel => {
   }
 });
 
-// Detector de creación masiva de canales
+// Detector de creación masiva de canales (Banea al creador y al bot si es un raid automatizado)
 client.on('channelCreate', async channel => {
   if (!channel.guild) return;
 
-  const settings = antiRaidSettings.get(channel.guild.id);
+  const guild = channel.guild;
+  const settings = antiRaidSettings.get(guild.id);
   if (!settings || !settings.enabled) return;
 
-  const guildId = channel.guild.id;
+  const guildId = guild.id;
   const now = Date.now();
 
-  if (!channelCreationTracker.has(guildId)) {
-    channelCreationTracker.set(guildId, { count: 1, timestamp: now });
-  } else {
-    const data = channelCreationTracker.get(guildId);
-    if (now - data.timestamp < 10000) {
-      data.count++;
-      if (data.count >= 3) {
-        try {
-          await channel.delete('Protección Anti-Raid: Creación masiva bloqueada');
-        } catch (e) {}
+  try {
+    const fetchedLogs = await guild.fetchAuditLogs({
+      limit: 1,
+      type: AuditLogEvent.ChannelCreate,
+    });
+    const channelLog = fetchedLogs.entries.first();
 
-        await sendRaidLog(
-          channel.guild, 
-          '¡Canal Eliminado por Raid Masivo!', 
-          `Se detectó un intento de raid creando canales masivamente. El canal "${channel.name}" ha sido eliminado automáticamente.`
-        );
+    if (channelLog) {
+      const { executor } = channelLog;
+      if (executor && executor.id !== client.user.id) {
+        if (whiteList.has(guildId) && whiteList.get(guildId).has(executor.id)) return;
+
+        if (!channelCreationTracker.has(guildId)) {
+          channelCreationTracker.set(guildId, { count: 1, timestamp: now, userId: executor.id });
+        } else {
+          const data = channelCreationTracker.get(guildId);
+          if (data.userId === executor.id && (now - data.timestamp < 10000)) {
+            data.count++;
+            if (data.count >= 3) {
+              try {
+                await channel.delete('Protección Anti-Raid: Creación masiva bloqueada');
+              } catch (e) {}
+
+              // Banes automáticos
+              try {
+                await guild.members.ban(executor.id, { reason: 'Raid: Creación masiva de canales' });
+              } catch (e) {}
+
+              if (executor.bot) {
+                try {
+                  const botAddLogs = await guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.BotAdd });
+                  const botAddLog = botAddLogs.entries.first();
+                  if (botAddLog && botAddLog.target.id === executor.id) {
+                    await guild.members.ban(botAddLog.executor.id, { reason: `Invitó al bot malicioso de raid: ${executor.tag}` });
+                  }
+                } catch (e) {}
+              }
+
+              await sendRaidLog(
+                guild,
+                '¡RAID DETECTADO Y BLOQUEADO!',
+                `El usuario/bot ${executor} (${executor.tag}) fue baneado automáticamente por crear canales masivamente.`
+              );
+            }
+          } else {
+            channelCreationTracker.set(guildId, { count: 1, timestamp: now, userId: executor.id });
+          }
+        }
       }
-    } else {
-      data.count = 1;
-      data.timestamp = now;
     }
+  } catch (e) {
+    console.log('Error en auditoría de creación de canales:', e);
   }
 });
 
