@@ -5,34 +5,33 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildModeration // Necesario para acciones anti-spam/raids si decides banear/silenciar
+    GatewayIntentBits.GuildModeration
   ]
 });
 
-// Almacenamiento en memoria para configuraciones y control de spam (en un servidor grande se usaría base de datos, para empezar esto va perfecto)
-const antiRaidSettings = new Map(); // guildId -> { enabled: boolean, logChannelId: string }
-const spamTracker = new Map();     // userId -> { count: number, lastMessageTimestamp: number }
+const antiRaidSettings = new Map();
+const spamTracker = new Map();
 
 client.once('clientReady', async () => {
   console.log(`¡Bot encendido como ${client.user.tag}!`);
 
-  // Definir los comandos de barra (Slash Commands)
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('antiraid')
-      .setDescription('Activa o desactiva el sistema de protección contra raids y spam')
-      .addBooleanOption(option =>
-        option.name('estado')
-          .setDescription('Elige true para encender o false para apagar')
-          .setRequired(true))
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  const antiRaidCmd = new SlashCommandBuilder()
+    .setName('antiraid')
+    .setDescription('Activa o desactiva el sistema de protección contra raids y spam')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-    new SlashCommandBuilder()
-      .setName('logsraid')
-      .setDescription('Configura el canal actual para recibir los reportes y alertas de seguridad')
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-  ].map(command => command.toJSON());
+  antiRaidCmd.addBooleanOption(opt => 
+    opt.setName('estado')
+       .setDescription('Elige true para encender o false para apagar')
+       .setRequired(true)
+  );
 
+  const logsRaidCmd = new SlashCommandBuilder()
+    .setName('logsraid')
+    .setDescription('Configura el canal actual para recibir los reportes y alertas de seguridad')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+  const commands = [antiRaidCmd.toJSON(), logsRaidCmd.toJSON()];
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   try {
@@ -47,14 +46,12 @@ client.once('clientReady', async () => {
   }
 });
 
-// Manejador de comandos de barra (/antiraid y /logsraid)
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName, guild, channel } = interaction;
   if (!guild) return;
 
-  // Obtener o inicializar configuración de la guild
   if (!antiRaidSettings.has(guild.id)) {
     antiRaidSettings.set(guild.id, { enabled: false, logChannelId: null });
   }
@@ -80,7 +77,6 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Función auxiliar para enviar alertas al canal de logs configurado
 async function sendRaidLog(guild, title, description, color = 0xFF0000) {
   const settings = antiRaidSettings.get(guild.id);
   if (!settings || !settings.enabled || !settings.logChannelId) return;
@@ -101,17 +97,15 @@ async function sendRaidLog(guild, title, description, color = 0xFF0000) {
   }
 }
 
-// 1. Detección de enlaces (Links) y Spam masivo de mensajes
 client.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
 
   const settings = antiRaidSettings.get(message.guild.id);
-  if (!settings || !settings.enabled) return; // Si el antiraid está apagado, no hace nada
+  if (!settings || !settings.enabled) return;
 
   const userId = message.author.id;
   const now = Date.now();
 
-  // --- Detector de Links / Invitaciones de Discord ---
   const linkRegex = /(https?:\/\/|discord\.gg\/|discord\.com\/invite\/)/i;
   if (linkRegex.test(message.content)) {
     try {
@@ -123,33 +117,28 @@ client.on('messageCreate', async message => {
       );
       return;
     } catch (e) {
-      console.log('No se pudo borrar el mensaje con link (falta de permisos)');
+      console.log('No se pudo borrar el mensaje con link');
     }
   }
 
-  // --- Detector de Spam Masivo (Muchos mensajes en pocos segundos) ---
   if (!spamTracker.has(userId)) {
     spamTracker.set(userId, { count: 1, lastMessageTimestamp: now });
   } else {
     const userData = spamTracker.get(userId);
     const timeDiff = now - userData.lastMessageTimestamp;
 
-    if (timeDiff < 4000) { // Si manda mensaje en menos de 4 segundos
+    if (timeDiff < 4000) {
       userData.count++;
       userData.lastMessageTimestamp = now;
 
-      if (userData.count >= 5) { // Si pasa de 5 mensajes seguidos muy rápido
+      if (userData.count >= 5) {
         try {
-          // Borrar el mensaje actual de spam
           await message.delete();
-          
           await sendRaidLog(
             message.guild, 
             'Spam Detectado', 
             `El usuario ${message.author} (${message.author.tag}) fue detectado haciendo spam masivo en ${message.channel}.`
           );
-          
-          // Opcional: Podrías mutearlo o advertirle aquí
         } catch (e) {
           console.log('Error manejando spam');
         }
@@ -161,8 +150,7 @@ client.on('messageCreate', async message => {
   }
 });
 
-// 2. Detección de Creación Masiva de Canales (posible Raid de canales)
-const channelCreationTracker = new Map(); // guildId -> { count: number, timestamp: number }
+const channelCreationTracker = new Map();
 
 client.on('channelCreate', async channel => {
   if (!channel.guild) return;
@@ -177,9 +165,9 @@ client.on('channelCreate', async channel => {
     channelCreationTracker.set(guildId, { count: 1, timestamp: now });
   } else {
     const data = channelCreationTracker.get(guildId);
-    if (now - data.timestamp < 10000) { // Si crean canales en menos de 10 segundos
+    if (now - data.timestamp < 10000) {
       data.count++;
-      if (data.count >= 3) { // Si crean 3 o más canales de golpe
+      if (data.count >= 3) {
         await sendRaidLog(
           channel.guild, 
           '¡Posible Raid Masivo de Canales!', 
@@ -193,5 +181,4 @@ client.on('channelCreate', async channel => {
   }
 });
 
-// Iniciar sesión con la variable de entorno segura de Railway
 client.login(process.env.DISCORD_TOKEN);
